@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS HUD - Interface ESP32</title>
+  <style>
+    :root {
+      --primary: #00e5ff;
+      --alert: #ff1744;
+      --bg: #050a12;
+      --card-bg: rgba(0, 229, 255, 0.05);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .hud-card {
+      background: var(--card-bg);
+      border: 1px solid var(--primary);
+      border-radius: 12px;
+      padding: 24px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
+    }
+
+    h1 {
+      color: var(--primary);
+      font-size: 1.5rem;
+      letter-spacing: 2px;
+      margin-bottom: 20px;
+      text-transform: uppercase;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      margin-bottom: 20px;
+      border: 1px solid currentColor;
+    }
+
+    .disconnected { color: #888; border-color: #888; }
+    .connected { color: #00e676; border-color: #00e676; }
+    .combat-mode { color: var(--alert); border-color: var(--alert); }
+
+    .btn {
+      background: transparent;
+      border: 1px solid var(--primary);
+      color: var(--primary);
+      padding: 12px 20px;
+      font-size: 0.95rem;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+      width: 100%;
+      margin-bottom: 12px;
+      transition: all 0.2s;
+    }
+
+    .btn:active {
+      background: var(--primary);
+      color: #000;
+    }
+
+    .btn-alert {
+      border-color: var(--alert);
+      color: var(--alert);
+    }
+
+    .btn-alert:active {
+      background: var(--alert);
+      color: #fff;
+    }
+
+    .log-box {
+      margin-top: 15px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid #222;
+      border-radius: 6px;
+      padding: 10px;
+      height: 120px;
+      overflow-y: auto;
+      text-align: left;
+      font-size: 0.8rem;
+      color: #aaa;
+    }
+
+    .log-entry { margin-bottom: 4px; }
+    .log-entry.active { color: var(--primary); }
+    .log-entry.alert { color: var(--alert); }
+  </style>
+</head>
+<body>
+
+  <div class="hud-card">
+    <h1>J.A.R.V.I.S.</h1>
+    <div id="bleStatus" class="status-badge disconnected">ESP32 Déconnecté</div>
+
+    <button id="connectBtn" class="btn">Connecter ESP32 (BLE)</button>
+    <button id="voiceBtn" class="btn" disabled>Démarrer l'écoute vocale</button>
+    <button id="manualCombatBtn" class="btn btn-alert" disabled>Test manuel : Mode Combat</button>
+
+    <div class="log-box" id="terminalLogs">
+      <div class="log-entry">Système initialisé. En attente BLE.</div>
+    </div>
+  </div>
+
+  <script>
+    const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const CHARACTERISTIC_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+
+    let bleDevice = null;
+    let rxCharacteristic = null;
+    let recognition = null;
+    let isListening = false;
+
+    const bleStatus = document.getElementById("bleStatus");
+    const connectBtn = document.getElementById("connectBtn");
+    const voiceBtn = document.getElementById("voiceBtn");
+    const manualCombatBtn = document.getElementById("manualCombatBtn");
+    const terminalLogs = document.getElementById("terminalLogs");
+
+    function log(message, type = "normal") {
+      const entry = document.createElement("div");
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `> ${message}`;
+      terminalLogs.appendChild(entry);
+      terminalLogs.scrollTop = terminalLogs.scrollHeight;
+    }
+
+    // Synthèse vocale de confirmation
+    function parler(texte) {
+      if ('speechSynthesis' in window) {
+        const synthese = new SpeechSynthesisUtterance(texte);
+        synthese.lang = 'fr-FR';
+        synthese.rate = 1.0;
+        window.speechSynthesis.speak(synthese);
+      }
+    }
+
+    // Connexion BLE
+    async function connecterBLE() {
+      try {
+        log("Recherche de l'ESP32...");
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "Jarvis_ESP32" }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        const server = await bleDevice.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        rxCharacteristic = await service.getCharacteristic(CHARACTERISTIC_RX_UUID);
+
+        bleStatus.className = "status-badge connected";
+        bleStatus.textContent = "ESP32 Connecté";
+        connectBtn.style.display = "none";
+        voiceBtn.disabled = false;
+        manualCombatBtn.disabled = false;
+
+        log("Connexion établie avec succès.", "active");
+        parler("Connexion établie monsieur.");
+      } catch (err) {
+        log("Erreur BLE : " + err.message, "alert");
+      }
+    }
+
+    function onDisconnected() {
+      bleStatus.className = "status-badge disconnected";
+      bleStatus.textContent = "ESP32 Déconnecté";
+      connectBtn.style.display = "block";
+      voiceBtn.disabled = true;
+      manualCombatBtn.disabled = true;
+      log("ESP32 déconnecté.", "alert");
+    }
+
+    // Transmission de la commande à l'ESP32
+    async function envoyerCommande(cmd) {
+      if (!rxCharacteristic) return;
+      try {
+        const encoder = new TextEncoder();
+        await rxCharacteristic.writeValue(encoder.encode(cmd));
+        log(`Ordre transmis : ${cmd}`, "active");
+      } catch (err) {
+        log("Erreur envoi BLE : " + err.message, "alert");
+      }
+    }
+
+    // Déclencheur Mode Combat
+    function declencherModeCombat() {
+      bleStatus.className = "status-badge combat-mode";
+      bleStatus.textContent = "MODE COMBAT ACTIF";
+      parler("Activation du mode combat.");
+      envoyerCommande("COMBAT");
+    }
+
+    // Reconnaissance vocale continue
+    function configurerVocal() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        log("API Vocale non supportée sur ce navigateur.", "alert");
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.lang = 'fr-FR';
+      recognition.continuous = true;
+      recognition.interimResults = false;
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[event.results.length - 1][0].transcript.trim().toLowerCase();
+        log(`Entendu : "${transcript}"`);
+
+        // Détection de la consigne
+        if (transcript.includes("combat") || (transcript.includes("jarvis") && transcript.includes("combat"))) {
+          declencherModeCombat();
+        } else if (transcript.includes("repos") || transcript.includes("stop")) {
+          bleStatus.className = "status-badge connected";
+          bleStatus.textContent = "ESP32 Connecté";
+          parler("Retour au mode repos.");
+          envoyerCommande("REPOS");
+        }
+      };
+
+      recognition.onerror = (e) => {
+        log("Erreur micro : " + e.error, "alert");
+      };
+
+      recognition.onend = () => {
+        if (isListening) {
+          recognition.start(); // Relance automatiquement l'écoute
+        }
+      };
+    }
+
+    connectBtn.addEventListener("click", connecterBLE);
+
+    voiceBtn.addEventListener("click", () => {
+      if (!recognition) configurerVocal();
+
+      if (!isListening) {
+        recognition.start();
+        isListening = true;
+        voiceBtn.textContent = "Couper l'écoute vocale";
+        log("Écoute vocale active...", "active");
+      } else {
+        isListening = false;
+        recognition.stop();
+        voiceBtn.textContent = "Démarrer l'écoute vocale";
+        log("Écoute arrêtée.");
+      }
+    });
+
+    manualCombatBtn.addEventListener("click", declencherModeCombat);
+  </script>
+</body>
+</html>
